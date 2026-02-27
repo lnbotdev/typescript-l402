@@ -2,6 +2,7 @@ import type { LnBot } from "@lnbot/sdk";
 import type { L402ClientOptions } from "../types.js";
 import {
   L402Error,
+  L402BudgetExceededError,
   L402PaymentFailedError,
 } from "../errors.js";
 import { parseChallenge, parseAuthorization } from "../server/headers.js";
@@ -16,6 +17,12 @@ export interface L402Client {
   get(url: string, init?: RequestInit): Promise<unknown>;
   /** POST + JSON parse with automatic L402 payment. */
   post(url: string, init?: RequestInit): Promise<unknown>;
+  /** PUT + JSON parse with automatic L402 payment. */
+  put(url: string, init?: RequestInit): Promise<unknown>;
+  /** PATCH + JSON parse with automatic L402 payment. */
+  patch(url: string, init?: RequestInit): Promise<unknown>;
+  /** DELETE + JSON parse with automatic L402 payment. */
+  delete(url: string, init?: RequestInit): Promise<unknown>;
 }
 
 /**
@@ -67,7 +74,7 @@ export function client(ln: LnBot, options: L402ClientOptions = {}): L402Client {
 
     // Step 4: Budget checks
     if (price > maxPrice) {
-      throw new L402Error(
+      throw new L402BudgetExceededError(
         `Price ${price} sats exceeds maxPrice ${maxPrice}`,
       );
     }
@@ -97,23 +104,33 @@ export function client(ln: LnBot, options: L402ClientOptions = {}): L402Client {
         : undefined,
     });
 
-    budget.record(price);
+    budget.record(payment.amount ?? price);
 
     // Step 7: Retry with L402 Authorization
     const retryHeaders = new Headers(init?.headers);
     retryHeaders.set("Authorization", payment.authorization);
-    return globalThis.fetch(url, { ...init, headers: retryHeaders });
+    const retry = await globalThis.fetch(url, { ...init, headers: retryHeaders });
+
+    if (retry.status === 402) {
+      throw new L402PaymentFailedError(
+        "Server returned 402 after successful payment",
+      );
+    }
+
+    return retry;
+  }
+
+  async function jsonMethod(method: string, url: string, init?: RequestInit) {
+    const res = await l402Fetch(url, { ...init, method });
+    return res.json();
   }
 
   return {
     fetch: l402Fetch,
-    async get(url: string, init?: RequestInit) {
-      const res = await l402Fetch(url, { ...init, method: "GET" });
-      return res.json();
-    },
-    async post(url: string, init?: RequestInit) {
-      const res = await l402Fetch(url, { ...init, method: "POST" });
-      return res.json();
-    },
+    get: (url: string, init?: RequestInit) => jsonMethod("GET", url, init),
+    post: (url: string, init?: RequestInit) => jsonMethod("POST", url, init),
+    put: (url: string, init?: RequestInit) => jsonMethod("PUT", url, init),
+    patch: (url: string, init?: RequestInit) => jsonMethod("PATCH", url, init),
+    delete: (url: string, init?: RequestInit) => jsonMethod("DELETE", url, init),
   };
 }

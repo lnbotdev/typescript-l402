@@ -182,7 +182,7 @@ describe("L402 client", () => {
     expect(res2.status).toBe(200);
   });
 
-  it("throws L402Error when price exceeds maxPrice", async () => {
+  it("throws L402BudgetExceededError when price exceeds maxPrice", async () => {
     const wwwAuth = 'L402 macaroon="mac", invoice="inv"';
     globalThis.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
@@ -192,7 +192,7 @@ describe("L402 client", () => {
 
     const c = client(ln, { maxPrice: 100 });
 
-    await expect(c.fetch(URL_PREMIUM)).rejects.toThrow(L402Error);
+    await expect(c.fetch(URL_PREMIUM)).rejects.toThrow(L402BudgetExceededError);
     await expect(c.fetch(URL_PREMIUM)).rejects.toThrow("exceeds maxPrice");
     expect(ln.l402.pay).not.toHaveBeenCalled();
   });
@@ -291,6 +291,81 @@ describe("L402 client", () => {
     expect(data).toEqual({ created: true });
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[1]?.method).toBe("POST");
+  });
+
+  it("put() sends PUT method and returns parsed JSON", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse(200, { updated: true }),
+    );
+
+    const c = client(ln);
+    const data = await c.put(URL_PREMIUM, {
+      body: JSON.stringify({ name: "new" }),
+    });
+
+    expect(data).toEqual({ updated: true });
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[1]?.method).toBe("PUT");
+  });
+
+  it("patch() sends PATCH method and returns parsed JSON", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse(200, { patched: true }),
+    );
+
+    const c = client(ln);
+    const data = await c.patch(URL_PREMIUM, {
+      body: JSON.stringify({ field: "value" }),
+    });
+
+    expect(data).toEqual({ patched: true });
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[1]?.method).toBe("PATCH");
+  });
+
+  it("delete() sends DELETE method and returns parsed JSON", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse(200, { deleted: true }),
+    );
+
+    const c = client(ln);
+    const data = await c.delete(URL_PREMIUM);
+
+    expect(data).toEqual({ deleted: true });
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[1]?.method).toBe("DELETE");
+  });
+
+  it("throws L402PaymentFailedError when retry after payment returns 402", async () => {
+    const wwwAuth = 'L402 macaroon="mac", invoice="inv"';
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce(
+        jsonResponse(402, { price: 10 }, { "www-authenticate": wwwAuth }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(402, { price: 10 }, { "www-authenticate": wwwAuth }),
+      );
+
+    ln.l402.pay.mockResolvedValue({
+      authorization: "L402 mac:pre",
+      paymentHash: "hash",
+      preimage: "pre",
+      amount: 10,
+      fee: 0,
+      paymentNumber: 1,
+      status: "settled",
+    });
+
+    const c = client(ln);
+
+    await expect(c.fetch(URL_PREMIUM)).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(L402PaymentFailedError);
+      expect((err as Error).message).toBe(
+        "Server returned 402 after successful payment",
+      );
+      return true;
+    });
+    expect(ln.l402.pay).toHaveBeenCalledTimes(1);
   });
 
   it("defaults maxPrice to 1000 sats", async () => {
