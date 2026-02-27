@@ -147,11 +147,18 @@ const client = l402.client(ln, {
 const response = await client.fetch("https://api.example.com/premium/data");
 const data = await response.json();
 
-// Convenience methods
+// Convenience methods — all HTTP verbs
 const json = await client.get("https://api.example.com/premium/data");
 const result = await client.post("https://api.example.com/premium/submit", {
   body: JSON.stringify({ query: "test" }),
 });
+await client.put("https://api.example.com/premium/item/1", {
+  body: JSON.stringify({ name: "updated" }),
+});
+await client.patch("https://api.example.com/premium/item/1", {
+  body: JSON.stringify({ status: "active" }),
+});
+await client.delete("https://api.example.com/premium/item/1");
 ```
 
 ### How the client works
@@ -251,6 +258,12 @@ try {
 | Export | Description |
 | --- | --- |
 | `l402.client(ln, options?)` | Creates an L402-aware HTTP client with automatic payment |
+| `client.fetch(url, init?)` | L402-aware fetch — pays 402 challenges automatically |
+| `client.get(url, init?)` | GET + JSON parse with automatic L402 payment |
+| `client.post(url, init?)` | POST + JSON parse with automatic L402 payment |
+| `client.put(url, init?)` | PUT + JSON parse with automatic L402 payment |
+| `client.patch(url, init?)` | PATCH + JSON parse with automatic L402 payment |
+| `client.delete(url, init?)` | DELETE + JSON parse with automatic L402 payment |
 
 ### Header Utilities
 
