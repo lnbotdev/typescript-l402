@@ -72,5 +72,9 @@
     "ai-agents",
     "pay-per-request"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lnbotdev/typescript-l402"
+  },
   "license": "MIT"
 }
