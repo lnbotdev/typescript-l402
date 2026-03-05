@@ -17,7 +17,7 @@ import { l402, LnBot } from "@lnbot/l402";
 const app = express();
 const ln = new LnBot({ apiKey: "key_..." });
 
-app.use("/api/premium", l402.paywall(ln, { price: 10 }));
+app.use("/api/premium", l402.paywall(ln, { walletId: "wal_...", price: 10 }));
 
 app.get("/api/premium/data", (req, res) => {
   res.json({ data: "premium content" });
@@ -73,6 +73,7 @@ const ln = new LnBot({ apiKey: "key_..." });
 
 // Paywall a route group — 10 sats per request
 app.use("/api/premium", l402.paywall(ln, {
+  walletId: "wal_...",
   price: 10,
   description: "API access",
 }));
@@ -96,19 +97,20 @@ app.listen(3000);
 ### How the middleware works
 
 1. Checks for an `Authorization: L402 ...` header
-2. If present, calls `ln.l402.verify()` — the SDK checks signature, preimage, and caveats server-side
+2. If present, calls `wallet.l402.verify()` — the SDK checks signature, preimage, and caveats server-side
 3. If valid, populates `req.l402` and calls `next()`
-4. If missing or invalid, calls `ln.l402.createChallenge()` and returns a `402` response with the invoice and macaroon
+4. If missing or invalid, calls `wallet.l402.createChallenge()` and returns a `402` response with the invoice and macaroon
 
 ### Dynamic pricing
 
 ```typescript
 // Fixed price per route
-app.use("/api/cheap", l402.paywall(ln, { price: 1 }));
-app.use("/api/expensive", l402.paywall(ln, { price: 100 }));
+app.use("/api/cheap", l402.paywall(ln, { walletId: "wal_...", price: 1 }));
+app.use("/api/expensive", l402.paywall(ln, { walletId: "wal_...", price: 100 }));
 
 // Custom pricing function — receives the request, returns price in sats
 app.use("/api/dynamic", l402.paywall(ln, {
+  walletId: "wal_...",
   price: (req) => {
     if (req.path.includes("/bulk")) return 50;
     return 5;
@@ -120,6 +122,7 @@ app.use("/api/dynamic", l402.paywall(ln, {
 
 | Option | Type | Description |
 | --- | --- | --- |
+| `walletId` | `string` | Wallet ID for L402 operations |
 | `price` | `number \| (req) => number` | Price in satoshis — fixed or per-request |
 | `description` | `string` | Invoice memo shown in wallets |
 | `expirySeconds` | `number` | Challenge expiry in seconds |
@@ -137,6 +140,7 @@ import { l402, LnBot } from "@lnbot/l402";
 const ln = new LnBot({ apiKey: "key_..." });
 
 const client = l402.client(ln, {
+  walletId: "wal_...",   // wallet for L402 payments
   maxPrice: 100,         // refuse to pay more than 100 sats per request
   budgetSats: 50000,     // spending limit for the period
   budgetPeriod: "day",   // reset period: "hour" | "day" | "week" | "month"
@@ -167,13 +171,14 @@ await client.delete("https://api.example.com/premium/item/1");
 2. If cached, sends the request with the `Authorization` header
 3. If no cache (or server rejects), makes a plain request
 4. On `402`, parses the challenge and checks budget limits
-5. Calls `ln.l402.pay()` — the SDK pays the invoice and returns a ready-to-use token
+5. Calls `wallet.l402.pay()` — the SDK pays the invoice and returns a ready-to-use token
 6. Caches the token and retries the request with authorization
 
 ### Client options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
+| `walletId` | `string` | — | Wallet ID for L402 operations |
 | `maxPrice` | `number` | `1000` | Max sats to pay for a single request |
 | `budgetSats` | `number` | unlimited | Total budget in sats for the period |
 | `budgetPeriod` | `string` | — | Reset period: `"hour"`, `"day"`, `"week"`, `"month"` |
@@ -195,7 +200,7 @@ const redisStore: TokenStore = {
   async delete(url) { /* delete from Redis */ },
 };
 
-const client = l402.client(ln, { store: redisStore });
+const client = l402.client(ln, { walletId: "wal_...", store: redisStore });
 ```
 
 ---
@@ -251,13 +256,13 @@ try {
 
 | Export | Description |
 | --- | --- |
-| `l402.paywall(ln, options)` | Express middleware factory — protects routes behind an L402 paywall |
+| `l402.paywall(ln, options)` | Express middleware factory — protects routes behind an L402 paywall. Options must include `walletId`. |
 
 ### Client
 
 | Export | Description |
 | --- | --- |
-| `l402.client(ln, options?)` | Creates an L402-aware HTTP client with automatic payment |
+| `l402.client(ln, options)` | Creates an L402-aware HTTP client with automatic payment. Options must include `walletId`. |
 | `client.fetch(url, init?)` | L402-aware fetch — pays 402 challenges automatically |
 | `client.get(url, init?)` | GET + JSON parse with automatic L402 payment |
 | `client.post(url, init?)` | POST + JSON parse with automatic L402 payment |
