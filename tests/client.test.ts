@@ -7,14 +7,19 @@ import { L402BudgetExceededError } from "../src/errors.js";
 // ── Mock LnBot SDK ──
 
 function createMockLn() {
+  const l402 = {
+    createChallenge: vi.fn(),
+    verify: vi.fn(),
+    pay: vi.fn(),
+  };
   return {
-    l402: {
-      createChallenge: vi.fn(),
-      verify: vi.fn(),
-      pay: vi.fn(),
-    },
+    wallet: vi.fn().mockReturnValue({ l402 }),
+    _l402: l402,
   } as unknown as LnBot & {
-    l402: {
+    wallet: ReturnType<typeof vi.fn>;
+    _l402: {
+      createChallenge: ReturnType<typeof vi.fn>;
+      verify: ReturnType<typeof vi.fn>;
       pay: ReturnType<typeof vi.fn>;
     };
   };
@@ -52,12 +57,12 @@ describe("L402 client", () => {
       jsonResponse(200, { data: "free" }),
     );
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
     const res = await c.fetch(URL_PREMIUM);
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: "free" });
-    expect(ln.l402.pay).not.toHaveBeenCalled();
+    expect(ln._l402.pay).not.toHaveBeenCalled();
   });
 
   it("pays 402 challenge and retries with authorization", async () => {
@@ -74,7 +79,7 @@ describe("L402 client", () => {
 
     globalThis.fetch = mockFetch;
 
-    ln.l402.pay.mockResolvedValue({
+    ln._l402.pay.mockResolvedValue({
       authorization: "L402 mac123:preimage_hex",
       paymentHash: "hash123",
       preimage: "preimage_hex",
@@ -84,12 +89,12 @@ describe("L402 client", () => {
       status: "settled",
     });
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
     const res = await c.fetch(URL_PREMIUM);
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: "premium" });
-    expect(ln.l402.pay).toHaveBeenCalledWith({ wwwAuthenticate: wwwAuth });
+    expect(ln._l402.pay).toHaveBeenCalledWith({ wwwAuthenticate: wwwAuth });
 
     // Verify retry had Authorization header
     const retryCall = mockFetch.mock.calls[1];
@@ -111,7 +116,7 @@ describe("L402 client", () => {
 
     globalThis.fetch = mockFetch;
 
-    ln.l402.pay.mockResolvedValue({
+    ln._l402.pay.mockResolvedValue({
       authorization: "L402 mac:pre",
       paymentHash: "hash",
       preimage: "pre",
@@ -121,15 +126,15 @@ describe("L402 client", () => {
       status: "settled",
     });
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
 
     // First fetch — pays
     await c.fetch(URL_PREMIUM);
-    expect(ln.l402.pay).toHaveBeenCalledTimes(1);
+    expect(ln._l402.pay).toHaveBeenCalledTimes(1);
 
     // Second fetch — uses cache, no new payment
     const res2 = await c.fetch(URL_PREMIUM);
-    expect(ln.l402.pay).toHaveBeenCalledTimes(1); // Still 1
+    expect(ln._l402.pay).toHaveBeenCalledTimes(1); // Still 1
     expect(res2.status).toBe(200);
 
     // Cached token was sent
@@ -160,7 +165,7 @@ describe("L402 client", () => {
 
     globalThis.fetch = mockFetch;
 
-    ln.l402.pay.mockResolvedValue({
+    ln._l402.pay.mockResolvedValue({
       authorization: "L402 mac:pre",
       paymentHash: "hash",
       preimage: "pre",
@@ -170,15 +175,15 @@ describe("L402 client", () => {
       status: "settled",
     });
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
 
     // First fetch — pays
     await c.fetch(URL_PREMIUM);
-    expect(ln.l402.pay).toHaveBeenCalledTimes(1);
+    expect(ln._l402.pay).toHaveBeenCalledTimes(1);
 
     // Second fetch — cached token rejected, re-pays
     const res2 = await c.fetch(URL_PREMIUM);
-    expect(ln.l402.pay).toHaveBeenCalledTimes(2);
+    expect(ln._l402.pay).toHaveBeenCalledTimes(2);
     expect(res2.status).toBe(200);
   });
 
@@ -190,11 +195,11 @@ describe("L402 client", () => {
       ),
     );
 
-    const c = client(ln, { maxPrice: 100 });
+    const c = client(ln, { walletId: "wal_test", maxPrice: 100 });
 
     await expect(c.fetch(URL_PREMIUM)).rejects.toThrow(L402BudgetExceededError);
     await expect(c.fetch(URL_PREMIUM)).rejects.toThrow("exceeds maxPrice");
-    expect(ln.l402.pay).not.toHaveBeenCalled();
+    expect(ln._l402.pay).not.toHaveBeenCalled();
   });
 
   it("throws L402BudgetExceededError when budget is exhausted", async () => {
@@ -211,7 +216,7 @@ describe("L402 client", () => {
       return Promise.resolve(jsonResponse(200, { data: "ok" }));
     });
 
-    ln.l402.pay.mockResolvedValue({
+    ln._l402.pay.mockResolvedValue({
       authorization: "L402 mac:pre",
       paymentHash: "hash",
       preimage: "pre",
@@ -222,6 +227,7 @@ describe("L402 client", () => {
     });
 
     const c = client(ln, {
+      walletId: "wal_test",
       budgetSats: 100,
       budgetPeriod: "day",
       store: "none", // Disable cache so each request pays
@@ -239,7 +245,7 @@ describe("L402 client", () => {
       jsonResponse(402, { error: "pay up" }),
     );
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
 
     await expect(c.fetch(URL_PREMIUM)).rejects.toThrow(
       "402 response missing WWW-Authenticate header",
@@ -252,7 +258,7 @@ describe("L402 client", () => {
       jsonResponse(402, { price: 10 }, { "www-authenticate": wwwAuth }),
     );
 
-    ln.l402.pay.mockResolvedValue({
+    ln._l402.pay.mockResolvedValue({
       authorization: null,
       paymentHash: "hash",
       preimage: null,
@@ -262,7 +268,7 @@ describe("L402 client", () => {
       status: "failed",
     });
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
 
     await expect(c.fetch(URL_PREMIUM)).rejects.toThrow(L402PaymentFailedError);
   });
@@ -272,7 +278,7 @@ describe("L402 client", () => {
       jsonResponse(200, { result: 42 }),
     );
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
     const data = await c.get(URL_PREMIUM);
 
     expect(data).toEqual({ result: 42 });
@@ -283,7 +289,7 @@ describe("L402 client", () => {
       jsonResponse(200, { created: true }),
     );
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
     const data = await c.post(URL_PREMIUM, {
       body: JSON.stringify({ query: "test" }),
     });
@@ -298,7 +304,7 @@ describe("L402 client", () => {
       jsonResponse(200, { updated: true }),
     );
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
     const data = await c.put(URL_PREMIUM, {
       body: JSON.stringify({ name: "new" }),
     });
@@ -313,7 +319,7 @@ describe("L402 client", () => {
       jsonResponse(200, { patched: true }),
     );
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
     const data = await c.patch(URL_PREMIUM, {
       body: JSON.stringify({ field: "value" }),
     });
@@ -328,7 +334,7 @@ describe("L402 client", () => {
       jsonResponse(200, { deleted: true }),
     );
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
     const data = await c.delete(URL_PREMIUM);
 
     expect(data).toEqual({ deleted: true });
@@ -346,7 +352,7 @@ describe("L402 client", () => {
         jsonResponse(402, { price: 10 }, { "www-authenticate": wwwAuth }),
       );
 
-    ln.l402.pay.mockResolvedValue({
+    ln._l402.pay.mockResolvedValue({
       authorization: "L402 mac:pre",
       paymentHash: "hash",
       preimage: "pre",
@@ -356,7 +362,7 @@ describe("L402 client", () => {
       status: "settled",
     });
 
-    const c = client(ln);
+    const c = client(ln, { walletId: "wal_test" });
 
     await expect(c.fetch(URL_PREMIUM)).rejects.toSatisfy((err: unknown) => {
       expect(err).toBeInstanceOf(L402PaymentFailedError);
@@ -365,7 +371,7 @@ describe("L402 client", () => {
       );
       return true;
     });
-    expect(ln.l402.pay).toHaveBeenCalledTimes(1);
+    expect(ln._l402.pay).toHaveBeenCalledTimes(1);
   });
 
   it("defaults maxPrice to 1000 sats", async () => {
@@ -376,7 +382,7 @@ describe("L402 client", () => {
       ),
     );
 
-    const c = client(ln); // No maxPrice specified
+    const c = client(ln, { walletId: "wal_test" }); // No maxPrice specified
 
     await expect(c.fetch(URL_PREMIUM)).rejects.toThrow("exceeds maxPrice 1000");
   });

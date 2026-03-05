@@ -7,29 +7,38 @@ import { l402 } from "../src/index.js";
 
 // ── Mock SDK for server side ──
 
+const serverL402 = {
+  createChallenge: vi.fn(),
+  verify: vi.fn(),
+  pay: vi.fn(),
+};
 const serverLn = {
-  l402: {
-    createChallenge: vi.fn(),
-    verify: vi.fn(),
-    pay: vi.fn(),
-  },
+  wallet: vi.fn().mockReturnValue({ l402: serverL402 }),
+  _l402: serverL402,
 } as unknown as LnBot & {
-  l402: {
+  wallet: ReturnType<typeof vi.fn>;
+  _l402: {
     createChallenge: ReturnType<typeof vi.fn>;
     verify: ReturnType<typeof vi.fn>;
+    pay: ReturnType<typeof vi.fn>;
   };
 };
 
 // ── Mock SDK for client side ──
 
+const clientL402 = {
+  createChallenge: vi.fn(),
+  verify: vi.fn(),
+  pay: vi.fn(),
+};
 const clientLn = {
-  l402: {
-    createChallenge: vi.fn(),
-    verify: vi.fn(),
-    pay: vi.fn(),
-  },
+  wallet: vi.fn().mockReturnValue({ l402: clientL402 }),
+  _l402: clientL402,
 } as unknown as LnBot & {
-  l402: {
+  wallet: ReturnType<typeof vi.fn>;
+  _l402: {
+    createChallenge: ReturnType<typeof vi.fn>;
+    verify: ReturnType<typeof vi.fn>;
     pay: ReturnType<typeof vi.fn>;
   };
 };
@@ -39,7 +48,7 @@ const clientLn = {
 const app = express();
 app.use(
   "/api/premium",
-  l402.paywall(serverLn, { price: 10, description: "Premium API" }),
+  l402.paywall(serverLn, { walletId: "wal_test", price: 10, description: "Premium API" }),
 );
 app.get("/api/premium/data", (req, res) => {
   res.json({ data: "premium content", paymentHash: req.l402?.paymentHash });
@@ -79,14 +88,14 @@ describe("integration: full L402 roundtrip", () => {
   it("premium route returns 402 without auth, succeeds after payment", async () => {
     // Set up server mocks
     const wwwAuth = 'L402 macaroon="test_mac", invoice="lnbc10n1test"';
-    (serverLn.l402.createChallenge as ReturnType<typeof vi.fn>).mockResolvedValue({
+    serverLn._l402.createChallenge.mockResolvedValue({
       macaroon: "test_mac",
       invoice: "lnbc10n1test",
       paymentHash: "test_hash",
       expiresAt: "2099-01-01T00:00:00Z",
       wwwAuthenticate: wwwAuth,
     });
-    (serverLn.l402.verify as ReturnType<typeof vi.fn>).mockResolvedValue({
+    serverLn._l402.verify.mockResolvedValue({
       valid: true,
       paymentHash: "test_hash",
       caveats: null,
@@ -94,7 +103,7 @@ describe("integration: full L402 roundtrip", () => {
     });
 
     // Set up client mocks
-    clientLn.l402.pay.mockResolvedValue({
+    clientLn._l402.pay.mockResolvedValue({
       authorization: "L402 test_mac:test_preimage",
       paymentHash: "test_hash",
       preimage: "test_preimage",
@@ -113,7 +122,7 @@ describe("integration: full L402 roundtrip", () => {
     expect(body402.invoice).toBe("lnbc10n1test");
 
     // Step 2: Use L402 client — should pay and succeed
-    const c = l402.client(clientLn, { maxPrice: 100 });
+    const c = l402.client(clientLn, { walletId: "wal_test", maxPrice: 100 });
     const data = await c.get(`${baseUrl}/api/premium/data`);
 
     expect(data).toMatchObject({
@@ -122,29 +131,29 @@ describe("integration: full L402 roundtrip", () => {
     });
 
     // Verify client called pay
-    expect(clientLn.l402.pay).toHaveBeenCalledWith({
+    expect(clientLn._l402.pay).toHaveBeenCalledWith({
       wwwAuthenticate: wwwAuth,
     });
   });
 
   it("L402 client caches token and reuses it", async () => {
     const wwwAuth = 'L402 macaroon="cache_mac", invoice="lnbc1cache"';
-    (serverLn.l402.createChallenge as ReturnType<typeof vi.fn>).mockResolvedValue({
+    serverLn._l402.createChallenge.mockResolvedValue({
       macaroon: "cache_mac",
       invoice: "lnbc1cache",
       paymentHash: "cache_hash",
       expiresAt: "2099-01-01T00:00:00Z",
       wwwAuthenticate: wwwAuth,
     });
-    (serverLn.l402.verify as ReturnType<typeof vi.fn>).mockResolvedValue({
+    serverLn._l402.verify.mockResolvedValue({
       valid: true,
       paymentHash: "cache_hash",
       caveats: null,
       error: null,
     });
 
-    clientLn.l402.pay.mockClear();
-    clientLn.l402.pay.mockResolvedValue({
+    clientLn._l402.pay.mockClear();
+    clientLn._l402.pay.mockResolvedValue({
       authorization: "L402 cache_mac:cache_pre",
       paymentHash: "cache_hash",
       preimage: "cache_pre",
@@ -154,14 +163,14 @@ describe("integration: full L402 roundtrip", () => {
       status: "settled",
     });
 
-    const c = l402.client(clientLn, { maxPrice: 100 });
+    const c = l402.client(clientLn, { walletId: "wal_test", maxPrice: 100 });
 
     // First request — pays
     await c.get(`${baseUrl}/api/premium/data`);
-    expect(clientLn.l402.pay).toHaveBeenCalledTimes(1);
+    expect(clientLn._l402.pay).toHaveBeenCalledTimes(1);
 
     // Second request — uses cached token, no new payment
     await c.get(`${baseUrl}/api/premium/data`);
-    expect(clientLn.l402.pay).toHaveBeenCalledTimes(1);
+    expect(clientLn._l402.pay).toHaveBeenCalledTimes(1);
   });
 });

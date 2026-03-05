@@ -7,18 +7,20 @@ import { resolvePrice } from "./pricing.js";
  * Express middleware factory that protects routes behind an L402 paywall.
  *
  * Two SDK calls:
- *  - `ln.l402.verify()` — check an incoming Authorization header
- *  - `ln.l402.createChallenge()` — mint a new invoice + macaroon challenge
+ *  - `wallet.l402.verify()` — check an incoming Authorization header
+ *  - `wallet.l402.createChallenge()` — mint a new invoice + macaroon challenge
  */
 export function paywall(ln: LnBot, options: L402PaywallOptions) {
   return async (req: Request, res: Response, next: NextFunction) => {
+    const wallet = ln.wallet(options.walletId);
+
     // Step 1: Check for existing L402 Authorization header
     const authHeader = req.headers["authorization"];
 
     if (authHeader && authHeader.startsWith("L402 ")) {
       // Step 2: Verify via SDK (stateless — checks signature, preimage, caveats)
       try {
-        const result = await ln.l402.verify({ authorization: authHeader });
+        const result = await wallet.l402.verify({ authorization: authHeader });
 
         if (result.valid) {
           req.l402 = {
@@ -36,7 +38,7 @@ export function paywall(ln: LnBot, options: L402PaywallOptions) {
     const price = await resolvePrice(options.price, req);
 
     try {
-      const challenge = await ln.l402.createChallenge({
+      const challenge = await wallet.l402.createChallenge({
         amount: price,
         description: options.description,
         expirySeconds: options.expirySeconds,

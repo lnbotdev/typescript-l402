@@ -28,9 +28,10 @@ export interface L402Client {
 /**
  * Create an L402-aware HTTP client.
  *
- * One SDK call: `ln.l402.pay()` — pays the invoice and returns the Authorization token.
+ * One SDK call: `wallet.l402.pay()` — pays the invoice and returns the Authorization token.
  */
-export function client(ln: LnBot, options: L402ClientOptions = {}): L402Client {
+export function client(ln: LnBot, options: L402ClientOptions): L402Client {
+  const wallet = ln.wallet(options.walletId);
   const store = resolveStore(options.store);
   const budget = new Budget(options);
   const maxPrice = options.maxPrice ?? 1000;
@@ -81,7 +82,7 @@ export function client(ln: LnBot, options: L402ClientOptions = {}): L402Client {
     budget.check(price);
 
     // Step 5: Pay via SDK
-    const payment = await ln.l402.pay({ wwwAuthenticate: wwwAuth });
+    const payment = await wallet.l402.pay({ wwwAuthenticate: wwwAuth });
 
     if (payment.status === "failed") {
       throw new L402PaymentFailedError("L402 payment failed");

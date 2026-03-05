@@ -16,6 +16,8 @@ declare global {
 
 /** Options for the `l402.paywall()` middleware. */
 export interface L402PaywallOptions {
+  /** The wallet ID to use for L402 operations. */
+  walletId: string;
   /** Price in satoshis — fixed number or async function receiving the request. */
   price: number | ((req: Request) => number | Promise<number>);
   /** Invoice memo / description. */
@@ -28,6 +30,8 @@ export interface L402PaywallOptions {
 
 /** Options for the `l402.client()` factory. */
 export interface L402ClientOptions {
+  /** The wallet ID to use for L402 operations. */
+  walletId: string;
   /** Max sats to pay for a single request (default: 1000). */
   maxPrice?: number;
   /** Total budget in sats for the period. */

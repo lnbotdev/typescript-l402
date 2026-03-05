@@ -6,14 +6,17 @@ import { paywall } from "../src/server/middleware.js";
 // ── Mock LnBot SDK ──
 
 function createMockLn() {
+  const l402 = {
+    createChallenge: vi.fn(),
+    verify: vi.fn(),
+    pay: vi.fn(),
+  };
   return {
-    l402: {
-      createChallenge: vi.fn(),
-      verify: vi.fn(),
-      pay: vi.fn(),
-    },
+    wallet: vi.fn().mockReturnValue({ l402 }),
+    _l402: l402,
   } as unknown as LnBot & {
-    l402: {
+    wallet: ReturnType<typeof vi.fn>;
+    _l402: {
       createChallenge: ReturnType<typeof vi.fn>;
       verify: ReturnType<typeof vi.fn>;
       pay: ReturnType<typeof vi.fn>;
@@ -64,7 +67,7 @@ describe("paywall middleware", () => {
   });
 
   it("returns 402 with challenge when no Authorization header is present", async () => {
-    ln.l402.createChallenge.mockResolvedValue({
+    ln._l402.createChallenge.mockResolvedValue({
       macaroon: "mac_base64",
       invoice: "lnbc10n1...",
       paymentHash: "abc123",
@@ -72,7 +75,7 @@ describe("paywall middleware", () => {
       wwwAuthenticate: 'L402 macaroon="mac_base64", invoice="lnbc10n1..."',
     });
 
-    const mw = paywall(ln, { price: 10, description: "Test API" });
+    const mw = paywall(ln, { walletId: "wal_test", price: 10, description: "Test API" });
     const req = mockReq();
     const res = mockRes();
     const next = vi.fn();
@@ -92,7 +95,7 @@ describe("paywall middleware", () => {
       unit: "satoshis",
       description: "Test API",
     });
-    expect(ln.l402.createChallenge).toHaveBeenCalledWith({
+    expect(ln._l402.createChallenge).toHaveBeenCalledWith({
       amount: 10,
       description: "Test API",
       expirySeconds: undefined,
@@ -101,14 +104,14 @@ describe("paywall middleware", () => {
   });
 
   it("calls next() and populates req.l402 when valid L402 token is present", async () => {
-    ln.l402.verify.mockResolvedValue({
+    ln._l402.verify.mockResolvedValue({
       valid: true,
       paymentHash: "hash123",
       caveats: ["expiry=2099"],
       error: null,
     });
 
-    const mw = paywall(ln, { price: 10 });
+    const mw = paywall(ln, { walletId: "wal_test", price: 10 });
     const req = mockReq({
       headers: { authorization: "L402 macaroon_data:preimage_hex" },
     });
@@ -122,20 +125,20 @@ describe("paywall middleware", () => {
       paymentHash: "hash123",
       caveats: ["expiry=2099"],
     });
-    expect(ln.l402.verify).toHaveBeenCalledWith({
+    expect(ln._l402.verify).toHaveBeenCalledWith({
       authorization: "L402 macaroon_data:preimage_hex",
     });
-    expect(ln.l402.createChallenge).not.toHaveBeenCalled();
+    expect(ln._l402.createChallenge).not.toHaveBeenCalled();
   });
 
   it("issues new challenge when verify returns valid: false", async () => {
-    ln.l402.verify.mockResolvedValue({
+    ln._l402.verify.mockResolvedValue({
       valid: false,
       paymentHash: null,
       caveats: null,
       error: "invalid preimage",
     });
-    ln.l402.createChallenge.mockResolvedValue({
+    ln._l402.createChallenge.mockResolvedValue({
       macaroon: "new_mac",
       invoice: "lnbc20n1...",
       paymentHash: "xyz",
@@ -143,7 +146,7 @@ describe("paywall middleware", () => {
       wwwAuthenticate: 'L402 macaroon="new_mac", invoice="lnbc20n1..."',
     });
 
-    const mw = paywall(ln, { price: 20 });
+    const mw = paywall(ln, { walletId: "wal_test", price: 20 });
     const req = mockReq({
       headers: { authorization: "L402 bad_mac:bad_preimage" },
     });
@@ -154,13 +157,13 @@ describe("paywall middleware", () => {
 
     expect(next).not.toHaveBeenCalled();
     expect(res._status).toBe(402);
-    expect(ln.l402.verify).toHaveBeenCalled();
-    expect(ln.l402.createChallenge).toHaveBeenCalled();
+    expect(ln._l402.verify).toHaveBeenCalled();
+    expect(ln._l402.createChallenge).toHaveBeenCalled();
   });
 
   it("issues new challenge when verify throws", async () => {
-    ln.l402.verify.mockRejectedValue(new Error("network error"));
-    ln.l402.createChallenge.mockResolvedValue({
+    ln._l402.verify.mockRejectedValue(new Error("network error"));
+    ln._l402.createChallenge.mockResolvedValue({
       macaroon: "mac",
       invoice: "inv",
       paymentHash: "ph",
@@ -168,7 +171,7 @@ describe("paywall middleware", () => {
       wwwAuthenticate: 'L402 macaroon="mac", invoice="inv"',
     });
 
-    const mw = paywall(ln, { price: 5 });
+    const mw = paywall(ln, { walletId: "wal_test", price: 5 });
     const req = mockReq({
       headers: { authorization: "L402 mac:pre" },
     });
@@ -182,7 +185,7 @@ describe("paywall middleware", () => {
   });
 
   it("supports dynamic pricing function", async () => {
-    ln.l402.createChallenge.mockResolvedValue({
+    ln._l402.createChallenge.mockResolvedValue({
       macaroon: "mac",
       invoice: "inv",
       paymentHash: "ph",
@@ -191,7 +194,7 @@ describe("paywall middleware", () => {
     });
 
     const priceFn = vi.fn().mockReturnValue(42);
-    const mw = paywall(ln, { price: priceFn });
+    const mw = paywall(ln, { walletId: "wal_test", price: priceFn });
     const req = mockReq({ path: "/bulk" });
     const res = mockRes();
     const next = vi.fn();
@@ -199,13 +202,13 @@ describe("paywall middleware", () => {
     await mw(req, res as unknown as Response, next as NextFunction);
 
     expect(priceFn).toHaveBeenCalledWith(req);
-    expect(ln.l402.createChallenge).toHaveBeenCalledWith(
+    expect(ln._l402.createChallenge).toHaveBeenCalledWith(
       expect.objectContaining({ amount: 42 }),
     );
   });
 
   it("supports async pricing function", async () => {
-    ln.l402.createChallenge.mockResolvedValue({
+    ln._l402.createChallenge.mockResolvedValue({
       macaroon: "mac",
       invoice: "inv",
       paymentHash: "ph",
@@ -214,6 +217,7 @@ describe("paywall middleware", () => {
     });
 
     const mw = paywall(ln, {
+      walletId: "wal_test",
       price: async () => 99,
     });
     const req = mockReq();
@@ -222,13 +226,13 @@ describe("paywall middleware", () => {
 
     await mw(req, res as unknown as Response, next as NextFunction);
 
-    expect(ln.l402.createChallenge).toHaveBeenCalledWith(
+    expect(ln._l402.createChallenge).toHaveBeenCalledWith(
       expect.objectContaining({ amount: 99 }),
     );
   });
 
   it("skips non-L402 Authorization headers", async () => {
-    ln.l402.createChallenge.mockResolvedValue({
+    ln._l402.createChallenge.mockResolvedValue({
       macaroon: "mac",
       invoice: "inv",
       paymentHash: "ph",
@@ -236,7 +240,7 @@ describe("paywall middleware", () => {
       wwwAuthenticate: 'L402 macaroon="mac", invoice="inv"',
     });
 
-    const mw = paywall(ln, { price: 10 });
+    const mw = paywall(ln, { walletId: "wal_test", price: 10 });
     const req = mockReq({
       headers: { authorization: "Bearer some_jwt_token" },
     });
@@ -245,15 +249,15 @@ describe("paywall middleware", () => {
 
     await mw(req, res as unknown as Response, next as NextFunction);
 
-    expect(ln.l402.verify).not.toHaveBeenCalled();
+    expect(ln._l402.verify).not.toHaveBeenCalled();
     expect(res._status).toBe(402);
   });
 
   it("calls next(err) when createChallenge throws", async () => {
     const error = new Error("SDK error");
-    ln.l402.createChallenge.mockRejectedValue(error);
+    ln._l402.createChallenge.mockRejectedValue(error);
 
-    const mw = paywall(ln, { price: 10 });
+    const mw = paywall(ln, { walletId: "wal_test", price: 10 });
     const req = mockReq();
     const res = mockRes();
     const next = vi.fn();
@@ -264,7 +268,7 @@ describe("paywall middleware", () => {
   });
 
   it("passes expirySeconds and caveats to createChallenge", async () => {
-    ln.l402.createChallenge.mockResolvedValue({
+    ln._l402.createChallenge.mockResolvedValue({
       macaroon: "mac",
       invoice: "inv",
       paymentHash: "ph",
@@ -273,6 +277,7 @@ describe("paywall middleware", () => {
     });
 
     const mw = paywall(ln, {
+      walletId: "wal_test",
       price: 10,
       description: "desc",
       expirySeconds: 300,
@@ -284,7 +289,7 @@ describe("paywall middleware", () => {
 
     await mw(req, res as unknown as Response, next as NextFunction);
 
-    expect(ln.l402.createChallenge).toHaveBeenCalledWith({
+    expect(ln._l402.createChallenge).toHaveBeenCalledWith({
       amount: 10,
       description: "desc",
       expirySeconds: 300,
