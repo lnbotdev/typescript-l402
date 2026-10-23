@@ -147,6 +147,14 @@ describe("integration: full L402 roundtrip", () => {
     expect(right.status).toBe(200);
   });
 
+  it("a single-use token doesn't open the pass", async () => {
+    const challenge = await fetch(`${baseUrl}/api/premium/data`);
+    const macaroon = challenge.headers.get("www-authenticate")!.match(/macaroon="([^"]+)"/)![1];
+
+    const pass = await fetch(`${baseUrl}/api/pass/data`, { headers: { Authorization: `L402 ${macaroon}:pre` } });
+    expect(pass.status).toBe(402);
+  });
+
   it("with reuse: true, the client pays once and reuses the token", async () => {
     const c = l402.client(clientLn, { walletId: "wal_test", maxPrice: 100 });
 

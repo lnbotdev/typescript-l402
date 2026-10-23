@@ -29,13 +29,14 @@ export interface L402PaywallOptions {
    * with `reuse: true` a token has no expiry unless you set one.
    */
   expirySeconds?: number;
-  /** Macaroon caveats to attach (at most 8 while tokens are single-use). */
+  /** Macaroon caveats to attach (at most 8: two more bind each token to its paywall and price). */
   caveats?: string[];
   /**
    * `false` (the default): a token pays for one request. It works once, on
    * the route and at the price it was issued for.
-   * `true`: a token keeps working until it expires, on any route this
-   * paywall guards (a time-boxed pass; the 1.0 behaviour).
+   * `true`: a token is a pass. It keeps working until it expires, on any
+   * route this paywall guards; single-use tokens, and passes for another
+   * path or a lower price, don't open it.
    */
   reuse?: boolean;
   /**

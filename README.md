@@ -132,7 +132,7 @@ A token is spent when the request reaches your handler, even if the handler then
 
 ### Passes: `reuse: true`
 
-For "pay once, use for an hour", let tokens be reused until they expire. This is how 1.0 behaved, with no route or price binding:
+For "pay once, use for an hour", let tokens be reused until they expire. A pass carries `lnbot_pass=<path>` and `lnbot_price=<sats>` caveats instead: it opens any route under the path the paywall is mounted on (or the one route it guards), at that price or less. Single-use tokens don't open a pass route, and passes don't open single-use routes:
 
 ```typescript
 app.use("/api/pass", l402.paywall(ln, {
@@ -168,8 +168,8 @@ app.use("/api/dynamic", l402.paywall(ln, {
 | `price` | `number \| (req) => number` | Price in satoshis — fixed or per-request |
 | `description` | `string` | Invoice memo shown in wallets |
 | `expirySeconds` | `number` | Token lifetime in seconds. Default `3600`; with `reuse: true`, no expiry unless set |
-| `caveats` | `string[]` | Extra macaroon caveats (at most 8 while tokens are single-use) |
-| `reuse` | `boolean` | `false` (default): one token, one request. `true`: a token works until it expires |
+| `caveats` | `string[]` | Extra macaroon caveats (at most 8; two more carry each token's binding) |
+| `reuse` | `boolean` | `false` (default): one token, one request. `true`: a pass for this paywall that works until it expires |
 | `spentStore` | `SpentStore` | Where spent tokens are remembered. Default: in memory. Share one across instances |
 
 ---

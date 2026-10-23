@@ -432,25 +432,114 @@ describe("paywall middleware: one token, one request", () => {
   it("refuses more caveats than fit beside the binding", () => {
     const caveats = Array.from({ length: 9 }, (_, i) => `k${i}=v`);
     expect(() => paywall(ln, { walletId: "wal_test", price: 10, caveats })).toThrow("at most 8 caveats");
-    expect(() => paywall(ln, { walletId: "wal_test", price: 10, caveats, reuse: true })).not.toThrow();
+    expect(() => paywall(ln, { walletId: "wal_test", price: 10, caveats, reuse: true })).toThrow("at most 8 caveats");
+  });
+});
+
+describe("paywall middleware: passes (reuse: true)", () => {
+  let ln: ReturnType<typeof createMockLn>;
+
+  function valid(caveats: string[] | null, paymentHash = "hash1") {
+    ln._l402.verify.mockResolvedValue({ valid: true, paymentHash, caveats, error: null });
+  }
+
+  async function call(mw: ReturnType<typeof paywall>, overrides: Partial<Request> = {}) {
+    const req = mockReq({ headers: { authorization: "L402 mac:pre" }, ...overrides });
+    const res = mockRes();
+    const next = vi.fn();
+    await mw(req, res as unknown as Response, next as NextFunction);
+    return { req, res, next };
+  }
+
+  beforeEach(() => {
+    ln = createMockLn();
+    ln._l402.createChallenge.mockResolvedValue({
+      macaroon: "mac",
+      invoice: "lnbc5000n1pjtestdata",
+      paymentHash: "ph",
+      expiresAt: "2099-01-01T00:00:00Z",
+      wwwAuthenticate: 'L402 macaroon="mac", invoice="lnbc5000n1pjtestdata"',
+    });
   });
 
-  it("reuse: true lets a token work until it expires, as in 1.0", async () => {
-    valid(["expiry=2099"]);
-    const mw = paywall(ln, { walletId: "wal_test", price: 10, reuse: true });
+  it("binds a pass to the paywall's mount path and price, with no expiry unless set", async () => {
+    const mw = paywall(ln, { walletId: "wal_test", price: 500, reuse: true });
+    const { res } = await call(mw, { headers: {}, baseUrl: "/api/pass", path: "/data", originalUrl: "/api/pass/data" });
 
-    expect((await call(mw)).next).toHaveBeenCalledWith();
-    expect((await call(mw)).next).toHaveBeenCalledWith();
-
-    const { res } = await call(mw, { headers: {} });
     expect(res._status).toBe(402);
     expect(res._body).toMatchObject({ reusable: true });
     expect((res._body as Record<string, unknown>).expiresAt).toBeUndefined();
     expect(ln._l402.createChallenge).toHaveBeenCalledWith({
-      amount: 10,
+      amount: 500,
       description: undefined,
       expirySeconds: undefined,
-      caveats: undefined,
+      caveats: ["lnbot_pass=/api/pass", "lnbot_price=500"],
     });
+  });
+
+  it("lets a pass work again and again, on any route under its scope", async () => {
+    valid(["lnbot_pass=/api/pass", "lnbot_price=500"]);
+    const mw = paywall(ln, { walletId: "wal_test", price: 500, reuse: true });
+
+    expect((await call(mw, { baseUrl: "/api/pass", originalUrl: "/api/pass/a" })).next).toHaveBeenCalledWith();
+    expect((await call(mw, { baseUrl: "/api/pass", originalUrl: "/api/pass/b" })).next).toHaveBeenCalledWith();
+    expect(ln._l402.createChallenge).not.toHaveBeenCalled();
+  });
+
+  it("binds a pass to the route when the paywall sits in a route's chain", async () => {
+    const mw = paywall(ln, { walletId: "wal_test", price: 500, reuse: true });
+    await call(mw, { headers: {}, baseUrl: "", route: { path: "/items/:id" } } as Partial<Request>);
+
+    expect(ln._l402.createChallenge).toHaveBeenCalledWith(
+      expect.objectContaining({ caveats: ["lnbot_pass=/items/:id", "lnbot_price=500"] }),
+    );
+  });
+
+  it("refuses a single-use token, a cheaper pass, and a pass for another scope", async () => {
+    const mw = paywall(ln, { walletId: "wal_test", price: 500, reuse: true });
+    const at = { baseUrl: "/api/pass", originalUrl: "/api/pass/data" };
+
+    valid(["lnbot_path=/api/pass/data", "lnbot_price=500"]);
+    expect((await call(mw, at)).next).not.toHaveBeenCalled();
+
+    valid(["lnbot_pass=/api/pass", "lnbot_price=10"]);
+    expect((await call(mw, at)).next).not.toHaveBeenCalled();
+
+    valid(["lnbot_pass=/api/other", "lnbot_price=500"]);
+    expect((await call(mw, at)).next).not.toHaveBeenCalled();
+
+    valid(["expiry=2099"]);
+    expect((await call(mw, at)).next).not.toHaveBeenCalled();
+  });
+
+  it("is never refused for having been used", async () => {
+    const claim = vi.fn().mockResolvedValue(false);
+    valid(["lnbot_pass=/", "lnbot_price=10"]);
+    const { next } = await call(paywall(ln, { walletId: "wal_test", price: 10, reuse: true, spentStore: { claim } }));
+
+    expect(next).toHaveBeenCalledWith();
+    expect(claim).not.toHaveBeenCalled();
+  });
+});
+
+describe("paywall middleware: single-use paywalls refuse passes", () => {
+  it("doesn't let a pass open a pay-per-request route", async () => {
+    const ln = createMockLn();
+    ln._l402.createChallenge.mockResolvedValue({
+      macaroon: "mac",
+      invoice: "lnbc100n1pjtestdata",
+      paymentHash: "ph",
+      expiresAt: "2099-01-01T00:00:00Z",
+      wwwAuthenticate: 'L402 macaroon="mac", invoice="lnbc100n1pjtestdata"',
+    });
+    ln._l402.verify.mockResolvedValue({ valid: true, paymentHash: "h", caveats: ["lnbot_pass=/", "lnbot_price=500"], error: null });
+
+    const req = mockReq({ headers: { authorization: "L402 mac:pre" } });
+    const res = mockRes();
+    const next = vi.fn();
+    await paywall(ln, { walletId: "wal_test", price: 10 })(req, res as unknown as Response, next as NextFunction);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res._status).toBe(402);
   });
 });
