@@ -6,6 +6,7 @@ import {
   L402PaymentFailedError,
 } from "../errors.js";
 import { parseChallenge, parseAuthorization } from "../server/headers.js";
+import { invoiceSats } from "../invoice.js";
 import { Budget } from "./budget.js";
 import { resolveStore } from "./store.js";
 
@@ -69,11 +70,14 @@ export function client(ln: LnBot, options: L402ClientOptions): L402Client {
     const challenge = parseChallenge(wwwAuth);
     if (!challenge) throw new L402Error("Could not parse L402 challenge");
 
-    // Parse body for price info
     const body = await res.json().catch(() => null);
-    const price: number = body?.price ?? 0;
 
-    // Step 4: Budget checks
+    // Step 4: Budget checks, against the amount the invoice itself asks for
+    // (a server's own claim about its price isn't what gets paid)
+    const price = invoiceSats(challenge.invoice);
+    if (price === null) {
+      throw new L402Error("The 402 invoice has no amount; refusing to pay it");
+    }
     if (price > maxPrice) {
       throw new L402BudgetExceededError(
         `Price ${price} sats exceeds maxPrice ${maxPrice}`,
@@ -93,17 +97,19 @@ export function client(ln: LnBot, options: L402ClientOptions): L402Client {
       );
     }
 
-    // Step 6: Cache the token
-    const parsed = parseAuthorization(payment.authorization);
-    await store.set(url, {
-      macaroon: parsed?.macaroon ?? challenge.macaroon,
-      preimage: payment.preimage ?? parsed?.preimage ?? "",
-      authorization: payment.authorization,
-      paidAt: new Date(),
-      expiresAt: body?.expiresAt
-        ? new Date(body.expiresAt)
-        : undefined,
-    });
+    // Step 6: Cache the token, unless the server says it works only once
+    if (body?.reusable !== false) {
+      const parsed = parseAuthorization(payment.authorization);
+      await store.set(url, {
+        macaroon: parsed?.macaroon ?? challenge.macaroon,
+        preimage: payment.preimage ?? parsed?.preimage ?? "",
+        authorization: payment.authorization,
+        paidAt: new Date(),
+        expiresAt: body?.expiresAt
+          ? new Date(body.expiresAt)
+          : undefined,
+      });
+    }
 
     budget.record(payment.amount ?? price);
 

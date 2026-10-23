@@ -6,3 +6,4 @@ export {
   formatChallenge,
 } from "./headers.js";
 export { resolvePrice, type PricingFn } from "./pricing.js";
+export { MemorySpentStore } from "./spent.js";

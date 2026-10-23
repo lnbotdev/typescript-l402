@@ -39,6 +39,9 @@ function jsonResponse(status: number, body: unknown, headers?: Record<string, st
 
 const URL_PREMIUM = "https://api.example.com/premium/data";
 
+/** A BOLT11-shaped invoice asking for `sats` (the "n" unit is a tenth of a sat). */
+const invoice = (sats: number) => `lnbc${sats * 10}n1pjtestdata`;
+
 describe("L402 client", () => {
   let ln: ReturnType<typeof createMockLn>;
   let originalFetch: typeof globalThis.fetch;
@@ -66,7 +69,7 @@ describe("L402 client", () => {
   });
 
   it("pays 402 challenge and retries with authorization", async () => {
-    const wwwAuth = 'L402 macaroon="mac123", invoice="lnbc10n1..."';
+    const wwwAuth = `L402 macaroon="mac123", invoice="${invoice(10)}"`;
     const mockFetch = vi.fn()
       // First call: 402
       .mockResolvedValueOnce(
@@ -103,7 +106,7 @@ describe("L402 client", () => {
   });
 
   it("uses cached token without paying again", async () => {
-    const wwwAuth = 'L402 macaroon="mac", invoice="inv"';
+    const wwwAuth = `L402 macaroon="mac", invoice="${invoice(5)}"`;
     const mockFetch = vi.fn()
       // First request: 402
       .mockResolvedValueOnce(
@@ -144,7 +147,7 @@ describe("L402 client", () => {
   });
 
   it("re-pays when cached token is rejected (new 402)", async () => {
-    const wwwAuth = 'L402 macaroon="mac", invoice="inv"';
+    const wwwAuth = `L402 macaroon="mac", invoice="${invoice(5)}"`;
     const mockFetch = vi.fn()
       // First request: 402
       .mockResolvedValueOnce(
@@ -188,7 +191,7 @@ describe("L402 client", () => {
   });
 
   it("throws L402BudgetExceededError when price exceeds maxPrice", async () => {
-    const wwwAuth = 'L402 macaroon="mac", invoice="inv"';
+    const wwwAuth = `L402 macaroon="mac", invoice="${invoice(500)}"`;
     globalThis.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
         jsonResponse(402, { price: 500 }, { "www-authenticate": wwwAuth }),
@@ -203,7 +206,7 @@ describe("L402 client", () => {
   });
 
   it("throws L402BudgetExceededError when budget is exhausted", async () => {
-    const wwwAuth = 'L402 macaroon="mac", invoice="inv"';
+    const wwwAuth = `L402 macaroon="mac", invoice="${invoice(60)}"`;
     let callCount = 0;
     globalThis.fetch = vi.fn().mockImplementation(() => {
       callCount++;
@@ -253,7 +256,7 @@ describe("L402 client", () => {
   });
 
   it("throws L402PaymentFailedError when payment fails", async () => {
-    const wwwAuth = 'L402 macaroon="mac", invoice="inv"';
+    const wwwAuth = `L402 macaroon="mac", invoice="${invoice(10)}"`;
     globalThis.fetch = vi.fn().mockResolvedValue(
       jsonResponse(402, { price: 10 }, { "www-authenticate": wwwAuth }),
     );
@@ -343,7 +346,7 @@ describe("L402 client", () => {
   });
 
   it("throws L402PaymentFailedError when retry after payment returns 402", async () => {
-    const wwwAuth = 'L402 macaroon="mac", invoice="inv"';
+    const wwwAuth = `L402 macaroon="mac", invoice="${invoice(10)}"`;
     globalThis.fetch = vi.fn()
       .mockResolvedValueOnce(
         jsonResponse(402, { price: 10 }, { "www-authenticate": wwwAuth }),
@@ -375,7 +378,7 @@ describe("L402 client", () => {
   });
 
   it("defaults maxPrice to 1000 sats", async () => {
-    const wwwAuth = 'L402 macaroon="mac", invoice="inv"';
+    const wwwAuth = `L402 macaroon="mac", invoice="${invoice(1001)}"`;
     globalThis.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
         jsonResponse(402, { price: 1001 }, { "www-authenticate": wwwAuth }),
@@ -385,5 +388,104 @@ describe("L402 client", () => {
     const c = client(ln, { walletId: "wal_test" }); // No maxPrice specified
 
     await expect(c.fetch(URL_PREMIUM)).rejects.toThrow("exceeds maxPrice 1000");
+  });
+
+  it("checks maxPrice against the invoice, not the price the server claims", async () => {
+    const wwwAuth = `L402 macaroon="mac", invoice="${invoice(500)}"`;
+    globalThis.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        // The body understates the price; the invoice asks for 500.
+        jsonResponse(402, { price: 10 }, { "www-authenticate": wwwAuth }),
+      ),
+    );
+
+    const c = client(ln, { walletId: "wal_test", maxPrice: 100 });
+
+    await expect(c.fetch(URL_PREMIUM)).rejects.toThrow("Price 500 sats exceeds maxPrice 100");
+    expect(ln._l402.pay).not.toHaveBeenCalled();
+  });
+
+  it("counts the invoice amount against the budget", async () => {
+    const wwwAuth = `L402 macaroon="mac", invoice="${invoice(60)}"`;
+    let callCount = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      callCount++;
+      if (callCount % 2 === 1) {
+        // No price in the body at all: the invoice still says 60.
+        return Promise.resolve(jsonResponse(402, {}, { "www-authenticate": wwwAuth }));
+      }
+      return Promise.resolve(jsonResponse(200, { data: "ok" }));
+    });
+
+    ln._l402.pay.mockResolvedValue({
+      authorization: "L402 mac:pre",
+      paymentHash: "hash",
+      preimage: "pre",
+      amount: 60,
+      fee: 0,
+      paymentNumber: 1,
+      status: "settled",
+    });
+
+    const c = client(ln, { walletId: "wal_test", budgetSats: 100, budgetPeriod: "day", store: "none" });
+
+    await c.fetch(URL_PREMIUM);
+    await expect(c.fetch(URL_PREMIUM)).rejects.toThrow(L402BudgetExceededError);
+    expect(ln._l402.pay).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an invoice without an amount", async () => {
+    const wwwAuth = 'L402 macaroon="mac", invoice="lnbc1pjtestdata"';
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse(402, { price: 10 }, { "www-authenticate": wwwAuth }),
+    );
+
+    const c = client(ln, { walletId: "wal_test" });
+
+    await expect(c.fetch(URL_PREMIUM)).rejects.toThrow("has no amount");
+    expect(ln._l402.pay).not.toHaveBeenCalled();
+  });
+
+  it("refuses a challenge whose invoice isn't BOLT11", async () => {
+    const wwwAuth = 'L402 macaroon="mac", invoice="not-an-invoice"';
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse(402, { price: 10 }, { "www-authenticate": wwwAuth }),
+    );
+
+    const c = client(ln, { walletId: "wal_test" });
+
+    await expect(c.fetch(URL_PREMIUM)).rejects.toThrow(L402Error);
+    expect(ln._l402.pay).not.toHaveBeenCalled();
+  });
+
+  it("doesn't cache a token the server marks single-use", async () => {
+    const wwwAuth = `L402 macaroon="mac", invoice="${invoice(5)}"`;
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(402, { price: 5, reusable: false }, { "www-authenticate": wwwAuth }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: "first" }))
+      .mockResolvedValueOnce(jsonResponse(402, { price: 5, reusable: false }, { "www-authenticate": wwwAuth }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: "second" }));
+    globalThis.fetch = mockFetch;
+
+    ln._l402.pay.mockResolvedValue({
+      authorization: "L402 mac:pre",
+      paymentHash: "hash",
+      preimage: "pre",
+      amount: 5,
+      fee: 0,
+      paymentNumber: 1,
+      status: "settled",
+    });
+
+    const c = client(ln, { walletId: "wal_test" });
+    await c.fetch(URL_PREMIUM);
+    const res2 = await c.fetch(URL_PREMIUM);
+
+    expect(res2.status).toBe(200);
+    expect(ln._l402.pay).toHaveBeenCalledTimes(2);
+    // The second request went out without a stale token: four calls, not five.
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+    const secondRequest = mockFetch.mock.calls[2];
+    expect(new Headers(secondRequest[1]?.headers).get("Authorization")).toBeNull();
   });
 });

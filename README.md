@@ -15,7 +15,7 @@ import express from "express";
 import { l402, LnBot } from "@lnbot/l402";
 
 const app = express();
-const ln = new LnBot({ apiKey: "key_..." });
+const ln = new LnBot({ apiKey: "uk_..." });
 
 app.use("/api/premium", l402.paywall(ln, { walletId: "wal_...", price: 10 }));
 
@@ -25,6 +25,8 @@ app.get("/api/premium/data", (req, res) => {
 ```
 
 > This package is a thin glue layer. All L402 logic — macaroon creation, signature verification, preimage checking — lives in the [ln.bot API](https://ln.bot/docs) via [`@lnbot/sdk`](https://www.npmjs.com/package/@lnbot/sdk). Zero crypto dependencies.
+
+By default each payment buys one request: a token works once, on the route and at the price it was issued for. Set `reuse: true` for a pass that works until it expires.
 
 ---
 
@@ -62,14 +64,14 @@ yarn add @lnbot/l402
 
 ## Server — Protect Routes with L402
 
-The `l402.paywall()` middleware intercepts requests, verifies L402 tokens via the SDK, and issues new challenges when payment is needed. Two SDK calls, ~40 lines of glue code, zero crypto.
+The `l402.paywall()` middleware intercepts requests, verifies L402 tokens via the SDK, and issues new challenges when payment is needed. Two SDK calls and no crypto of its own.
 
 ```typescript
 import express from "express";
 import { l402, LnBot } from "@lnbot/l402";
 
 const app = express();
-const ln = new LnBot({ apiKey: "key_..." });
+const ln = new LnBot({ apiKey: "uk_..." });
 
 // Paywall a route group — 10 sats per request
 app.use("/api/premium", l402.paywall(ln, {
@@ -83,6 +85,7 @@ app.get("/api/premium/data", (req, res) => {
   res.json({
     data: "premium content",
     paymentHash: req.l402?.paymentHash,
+    paid: req.l402?.price,
   });
 });
 
@@ -97,9 +100,48 @@ app.listen(3000);
 ### How the middleware works
 
 1. Checks for an `Authorization: L402 ...` header
-2. If present, calls `wallet.l402.verify()` — the SDK checks signature, preimage, and caveats server-side
-3. If valid, populates `req.l402` and calls `next()`
-4. If missing or invalid, calls `wallet.l402.createChallenge()` and returns a `402` response with the invoice and macaroon
+2. If present, calls `wallet.l402.verify()`: ln.bot checks the signature, the preimage and the expiry
+3. Checks that the token was issued for this route and price, and that it hasn't been spent
+4. If so, marks it spent, populates `req.l402` and calls `next()`
+5. Otherwise calls `wallet.l402.createChallenge()` and returns a `402` response with the invoice and macaroon
+
+### One token, one request
+
+Each challenge carries two caveats, `lnbot_path=<path>` and `lnbot_price=<sats>`, so the token it produces only opens the route it was issued for, at that price or less. A holder can add caveats to a macaroon but never remove them, so a token can't be widened. Tokens expire after an hour unless you set `expirySeconds`, and a spent token is remembered until then.
+
+Spent tokens are remembered in memory by default. If your API runs on more than one instance (several processes, containers or serverless functions), give every instance the same `spentStore`, or a token spent on one instance could be spent again on another:
+
+```typescript
+import { createClient } from "redis";
+import type { SpentStore } from "@lnbot/l402";
+
+const redis = createClient({ url: process.env.REDIS_URL });
+await redis.connect();
+
+const spentStore: SpentStore = {
+  // SET NX EX: true only for the first caller; the key outlives the token's expiry
+  async claim(paymentHash, ttlSeconds) {
+    return (await redis.set(`l402:spent:${paymentHash}`, "1", { NX: true, EX: ttlSeconds })) === "OK";
+  },
+};
+
+app.use("/api/premium", l402.paywall(ln, { walletId: "wal_...", price: 10, spentStore }));
+```
+
+A token is spent when the request reaches your handler, even if the handler then fails.
+
+### Passes: `reuse: true`
+
+For "pay once, use for an hour", let tokens be reused until they expire. This is how 1.0 behaved, with no route or price binding:
+
+```typescript
+app.use("/api/pass", l402.paywall(ln, {
+  walletId: "wal_...",
+  price: 500,
+  reuse: true,
+  expirySeconds: 3600, // without it, a reusable token never expires
+}));
+```
 
 ### Dynamic pricing
 
@@ -125,23 +167,25 @@ app.use("/api/dynamic", l402.paywall(ln, {
 | `walletId` | `string` | Wallet ID for L402 operations |
 | `price` | `number \| (req) => number` | Price in satoshis — fixed or per-request |
 | `description` | `string` | Invoice memo shown in wallets |
-| `expirySeconds` | `number` | Challenge expiry in seconds |
-| `caveats` | `string[]` | Macaroon caveats to attach |
+| `expirySeconds` | `number` | Token lifetime in seconds. Default `3600`; with `reuse: true`, no expiry unless set |
+| `caveats` | `string[]` | Extra macaroon caveats (at most 8 while tokens are single-use) |
+| `reuse` | `boolean` | `false` (default): one token, one request. `true`: a token works until it expires |
+| `spentStore` | `SpentStore` | Where spent tokens are remembered. Default: in memory. Share one across instances |
 
 ---
 
 ## Client — Auto-Pay L402 APIs
 
-The `l402.client()` wrapper makes L402 payment transparent. It detects `402` responses, pays the Lightning invoice via the SDK, caches the token, and retries — all in one `fetch` call.
+The `l402.client()` wrapper makes L402 payment transparent. It detects `402` responses, pays the Lightning invoice via the SDK, and retries, all in one `fetch` call. Tokens the server marks reusable are cached and sent again.
 
 ```typescript
 import { l402, LnBot } from "@lnbot/l402";
 
-const ln = new LnBot({ apiKey: "key_..." });
+const ln = new LnBot({ apiKey: "uk_..." });
 
 const client = l402.client(ln, {
   walletId: "wal_...",   // wallet for L402 payments
-  maxPrice: 100,         // refuse to pay more than 100 sats per request
+  maxPrice: 100,         // refuse invoices above 100 sats
   budgetSats: 50000,     // spending limit for the period
   budgetPeriod: "day",   // reset period: "hour" | "day" | "week" | "month"
   store: "memory",       // token cache: "memory" (default) | "none" | custom TokenStore
@@ -170,16 +214,18 @@ await client.delete("https://api.example.com/premium/item/1");
 1. Checks the token cache for a valid credential
 2. If cached, sends the request with the `Authorization` header
 3. If no cache (or server rejects), makes a plain request
-4. On `402`, parses the challenge and checks budget limits
-5. Calls `wallet.l402.pay()` — the SDK pays the invoice and returns a ready-to-use token
-6. Caches the token and retries the request with authorization
+4. On `402`, parses the challenge and reads the amount from the invoice itself, then checks it against `maxPrice` and the budget. What the server says its price is doesn't count: the invoice is what gets paid, and an invoice without an amount is refused
+5. Calls `wallet.l402.pay()`: the SDK pays the invoice and returns a ready-to-use token
+6. Caches the token unless the server marked it single-use (`"reusable": false`), and retries the request with authorization
+
+The budget is kept in memory, so it starts again from zero when the process restarts. To cap what an agent can spend in total, fund its wallet with only that much.
 
 ### Client options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `walletId` | `string` | — | Wallet ID for L402 operations |
-| `maxPrice` | `number` | `1000` | Max sats to pay for a single request |
+| `maxPrice` | `number` | `1000` | Max sats to pay for a single request, read from the invoice |
 | `budgetSats` | `number` | unlimited | Total budget in sats for the period |
 | `budgetPeriod` | `string` | — | Reset period: `"hour"`, `"day"`, `"week"`, `"month"` |
 | `store` | `string \| TokenStore` | `"memory"` | Token cache: `"memory"`, `"none"`, or custom |
@@ -192,7 +238,7 @@ Implement the `TokenStore` interface for Redis, file system, or any persistence 
 import { l402, LnBot } from "@lnbot/l402";
 import type { TokenStore } from "@lnbot/l402";
 
-const ln = new LnBot({ apiKey: "key_..." });
+const ln = new LnBot({ apiKey: "uk_..." });
 
 const redisStore: TokenStore = {
   async get(url) { /* read from Redis */ },
@@ -226,6 +272,10 @@ l402.formatAuthorization("mac_base64", "preimage_hex");
 
 l402.formatChallenge("abc", "lnbc1...");
 // → 'L402 macaroon="abc", invoice="lnbc1..."'
+
+// Read the amount a BOLT11 invoice asks for, in sats (null if it names none)
+l402.invoiceSats("lnbc100n1p...");
+// → 10
 ```
 
 ---
@@ -257,6 +307,7 @@ try {
 | Export | Description |
 | --- | --- |
 | `l402.paywall(ln, options)` | Express middleware factory — protects routes behind an L402 paywall. Options must include `walletId`. |
+| `MemorySpentStore` | The default in-memory `SpentStore` |
 
 ### Client
 
@@ -278,6 +329,7 @@ try {
 | `l402.parseChallenge(header)` | Parse `WWW-Authenticate: L402 ...` into `{ macaroon, invoice }` |
 | `l402.formatAuthorization(macaroon, preimage)` | Format an `Authorization` header value |
 | `l402.formatChallenge(macaroon, invoice)` | Format a `WWW-Authenticate` header value |
+| `l402.invoiceSats(invoice)` | The amount a BOLT11 invoice asks for, in sats, or `null` |
 
 ### Types
 
@@ -287,6 +339,7 @@ try {
 | `L402ClientOptions` | Options for `l402.client()` |
 | `L402Token` | Cached L402 credential (macaroon + preimage + metadata) |
 | `TokenStore` | Interface for custom token caches |
+| `SpentStore` | Interface for a shared record of spent tokens |
 | `L402RequestData` | Data attached to `req.l402` after verification |
 
 ### Errors
@@ -294,7 +347,7 @@ try {
 | Class | Description |
 | --- | --- |
 | `L402Error` | Base error for all L402 protocol errors |
-| `L402BudgetExceededError` | Price or cumulative spend exceeds configured limits |
+| `L402BudgetExceededError` | The invoice's amount or cumulative spend exceeds configured limits |
 | `L402PaymentFailedError` | Lightning payment failed or didn't return authorization |
 
 ---

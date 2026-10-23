@@ -6,6 +6,7 @@ import {
   formatChallenge,
 } from "./server/headers.js";
 import { client } from "./client/fetch.js";
+import { invoiceSats } from "./invoice.js";
 
 export const l402 = {
   // Server
@@ -14,11 +15,12 @@ export const l402 = {
   // Client
   client,
 
-  // Header utilities (for custom integrations)
+  // Header and invoice utilities (for custom integrations)
   parseAuthorization,
   parseChallenge,
   formatAuthorization,
   formatChallenge,
+  invoiceSats,
 };
 
 export type {
@@ -26,10 +28,13 @@ export type {
   L402ClientOptions,
   L402Token,
   TokenStore,
+  SpentStore,
   L402RequestData,
 } from "./types.js";
 
 export type { L402Client } from "./client/fetch.js";
+
+export { MemorySpentStore } from "./server/spent.js";
 
 export { L402Error, L402BudgetExceededError, L402PaymentFailedError } from "./errors.js";
 
